@@ -14,6 +14,7 @@ Despite the repository name, this runs in **herdr-app**, not as a herdr-core plu
 
 - **Claude and Codex gauges:** Session, Weekly, and model-scoped Claude windows such as **Weekly · Fable**, when reported by the hub.
 - **Usage tab beside Files and Changes:** opens and closes the existing side panel, before the window controls—not a separate column beyond the close button. The panel choice is remembered per space.
+- **Ollama Cloud via plugin:** included/purchased credit balances, 24-hour spend and token counts, billing-period quota or legacy session/weekly gauges. Read-only; no Ollama key is stored in this mod.
 - **Clean subscription sections:** a divider separates Claude and Codex; no redundant email, plan, percentage, or miniature quota rows beneath the gauges.
 - **Native panel styling:** the same rounded border, clipped corners, 42px header, and header divider as Files/Changes.
 - **Theme-aware colors:** follows herdr-app's light, dark, and custom themes; no fixed provider colors or white-only markers.
@@ -47,6 +48,7 @@ Borders, cards, buttons, hover states, labels, and status messages use the same 
 - A CLIProxyAPI hub URL and **management key**.
 - Hub support for `v0/management/auth-files` and `v0/management/api-call`; `v0/management/reset-quota` clears hub routing cooldowns after a successful reset.
 - Accounts that report quota through the upstream Claude or Codex APIs. Reset availability depends on the account and provider, not just the mod.
+- For Ollama: [cliproxyapi-ollama-usage](https://github.com/AngDrew/cliproxyapi-ollama-usage) installed on the hub, its quota-only `ollama-usage` monitor auth file, and `POST /v0/management/quota/fetch` support. Your existing OpenAI-compatible Ollama provider alone does not create a quota card.
 
 ## Install
 
@@ -102,6 +104,16 @@ Click the **Usage** tab, then **Set up**, enter the hub URL and management key, 
 
 Use **Settings** to change the connection later. No keyboard binding is required or installed.
 
+## Ollama Cloud
+
+Install the [Ollama Usage plugin](https://github.com/AngDrew/cliproxyapi-ollama-usage#install) on CLIProxyAPI and add its monitor credential. Leave your existing Ollama inference provider unchanged, then update this mod and click **Refresh**. The hub handles Ollama authentication server-side; the mod uses only its existing management key.
+
+The same monitor appears in CLIProxyAPI **Quota Management → Plugin**. This panel reads its normalized quota response and displays included balance, period allowance, purchased balance, 24-hour spend/requests/tokens and available quota gauges. USD values below $1 retain five decimal places. Multiple monitors show separate money rows rather than summing potentially shared balances.
+
+The billing gauge is included balance divided by the period allowance; it is not 24-hour usage divided by the allowance. Monthly pace is unavailable without an actual window length, so no misleading seven-day pace tick is drawn. Legacy 5-hour/weekly plans retain their ordinary pace indicators.
+
+Ollama monitoring cannot spend reset credits. Missing/invalid plugin responses and HTTP failures show an error rather than a fabricated full-quota gauge. Ollama usage may lag and covers the provider's usage scope across clients, not just traffic through this hub. The hub plugin caches for one minute; this panel keeps its existing 15-minute automatic refresh.
+
 ## Manual resets
 
 ### Codex
@@ -138,6 +150,7 @@ node dev/hub.test.js
 node dev/claude-reset.test.js
 node dev/panel.test.js
 node dev/tab-integration.test.js
+node dev/ollama.test.js
 ```
 
 These checks use fake responses and do not contact your hub or spend real resets.
@@ -148,7 +161,7 @@ For local fixture data:
 node dev/stub-hub.mjs --port 8318
 ```
 
-Connect the panel to `http://127.0.0.1:8318/` with management key `stub`. The stub includes Claude grants, Codex credits, and accounts without credits. `--fail-reset-quota` exercises the cooldown-clear warning. Restore your real hub settings after testing.
+Connect the panel to `http://127.0.0.1:8318/` with management key `stub`. The stub includes Claude grants, Codex credits, an Ollama credit-balance monitor, and accounts without credits. `--fail-reset-quota` exercises the cooldown-clear warning. Restore your real hub settings after testing.
 
 To validate an installed mod:
 
@@ -161,7 +174,7 @@ herdr-app status
 
 - Multiple accounts are pooled by **simple average**, not capacity-weighted quota.
 - Pace assumes five-hour session and seven-day weekly windows; nonstandard plan windows may differ.
-- One hub at a time; Claude and Codex only.
+- One hub at a time; Claude, Codex and the `ollama-usage` plugin only.
 - This is a native GPUI panel, not a pixel-for-pixel copy of t3code's web interface.
 
 ## Uninstall

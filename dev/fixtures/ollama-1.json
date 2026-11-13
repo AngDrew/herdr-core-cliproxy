@@ -1,0 +1,72 @@
+{
+  "subscription": {
+    "plan": "Ollama Cloud"
+  },
+  "groups": [
+    {
+      "displayName": "Included credits",
+      "buckets": [
+        {
+          "window": "Billing period",
+          "remainingFraction": 0.725,
+          "resetTime": "2099-10-15T09:30:00Z",
+          "description": "Included credits; period starts 2099-09-15T09:30:00Z"
+        }
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "key": "included_balance_usd",
+      "label": "Included balance",
+      "value": 72.5,
+      "format": "currency",
+      "currency": "USD"
+    },
+    {
+      "key": "included_allowance_usd",
+      "label": "Period allowance",
+      "value": 100,
+      "format": "currency",
+      "currency": "USD"
+    },
+    {
+      "key": "purchased_balance_usd",
+      "label": "Purchased balance",
+      "value": 25,
+      "format": "currency",
+      "currency": "USD"
+    },
+    {
+      "key": "usage_usd_24h",
+      "label": "Spend · 24h",
+      "value": 0.01718,
+      "format": "currency",
+      "currency": "USD"
+    },
+    {
+      "key": "request_count_24h",
+      "label": "Requests · 24h",
+      "value": 15,
+      "format": "number"
+    },
+    {
+      "key": "input_tokens_24h",
+      "label": "Input tokens · 24h",
+      "value": 106000,
+      "format": "number"
+    },
+    {
+      "key": "cached_input_tokens_24h",
+      "label": "Cached input tokens · 24h",
+      "value": 46000,
+      "format": "number"
+    },
+    {
+      "key": "output_tokens_24h",
+      "label": "Output tokens · 24h",
+      "value": 13600,
+      "format": "number"
+    }
+  ]
+}

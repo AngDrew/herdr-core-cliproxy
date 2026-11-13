@@ -91,6 +91,16 @@ async function handle(request, response) {
       status = 200;
       ({ payload, providerStatus } = await callProvider(authIndex, call));
     }
+  } else if (path === "/v0/management/quota/fetch" && request.method === "POST") {
+    if (!authorised(request)) {
+      status = 401;
+      payload = { error: "management key required" };
+    } else {
+      const call = await readJsonBody(request);
+      const matched = call?.plugin_id === "ollama-usage" && call?.auth_index === "ollama-1";
+      status = matched ? 200 : 404;
+      payload = matched ? await readFixture("ollama-1.json") : { error: "no such Ollama monitor" };
+    }
   } else if (path === "/v0/management/reset-quota" && request.method === "POST") {
     if (!authorised(request)) {
       status = 401;

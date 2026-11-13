@@ -146,7 +146,7 @@ export async function fetchAccounts(input = {}) {
     url,
     managementKey,
     fetchImpl = defaultFetch,
-    providers = ["codex", "claude"],
+    providers = ["codex", "claude", "ollama-usage"],
     timeoutMs = DEFAULT_TIMEOUT_MS,
     onTimeout,
   } = input;
@@ -195,7 +195,7 @@ export function poolByProvider(accounts) {
     if (!groups.has(account.provider)) {
       groups.set(account.provider, {
         provider: account.provider,
-        label: PROVIDER_READERS[account.provider]?.label ?? account.provider,
+        label: account.provider === "ollama-usage" ? "Ollama" : PROVIDER_READERS[account.provider]?.label ?? account.provider,
         accounts: [],
         sums: new Map(),
       });
@@ -587,6 +587,22 @@ async function readAccount({ file, base, managementKey, fetchImpl, timeoutMs, on
   };
   const provider = PROVIDER_READERS[file.provider];
   const options = { base, managementKey, fetchImpl, timeoutMs, onTimeout };
+  if (file.provider === "ollama-usage") {
+    try {
+      if (typeof file.auth_index !== "string" || !file.auth_index.trim()) {
+        throw phraseFailure("The Ollama monitor has no credential index.");
+      }
+      const payload = await managementRequest({
+        ...options,
+        timeoutMs: Math.max(timeoutMs, 25000),
+        path: "quota/fetch",
+        body: { auth_index: file.auth_index, plugin_id: "ollama-usage" },
+      });
+      return { ...identity, label: file.label || file.name || file.id, ...readOllamaQuota(payload) };
+    } catch (error) {
+      return { ...identity, windows: [], error: failureText(error) };
+    }
+  }
   // A missing credits read never fails the row: a hub without the endpoint, or an answer that is
   // not a credits list, simply omits `resetCredits`.
   const resetCredits =
@@ -614,6 +630,48 @@ async function readAccount({ file, base, managementKey, fetchImpl, timeoutMs, on
     // One unreadable account keeps its own "probe failed" row; the other accounts still report.
     return { ...known, windows: [], error: failureText(error) };
   }
+}
+
+// Only known numeric metrics leave the plugin boundary: never render arbitrary response text.
+const OLLAMA_METRICS = {
+  included_balance_usd: ["Included balance", true],
+  included_allowance_usd: ["Period allowance", true],
+  purchased_balance_usd: ["Purchased balance", true],
+  usage_usd_24h: ["Spend · 24h", true],
+  request_count_24h: ["Requests · 24h", false],
+  input_tokens_24h: ["Input tokens · 24h", false],
+  cached_input_tokens_24h: ["Cached input tokens · 24h", false],
+  output_tokens_24h: ["Output tokens · 24h", false],
+};
+
+function readOllamaQuota(payload) {
+  const fail = () => { throw phraseFailure("The Ollama plugin returned an unreadable quota response."); };
+  if (!Array.isArray(payload?.groups) || !Array.isArray(payload?.summary)) return fail();
+  const windows = [];
+  const names = { "5h": ["session", SESSION_LABEL], "7d": ["weekly", WEEKLY_LABEL], "Billing period": ["billing", "Billing period"] };
+  for (const group of payload.groups) {
+    if (!Array.isArray(group?.buckets)) return fail();
+    for (const bucket of group.buckets) {
+      const name = names[bucket?.window];
+      if (!Array.isArray(name)) continue;
+      const fraction = bucket.remainingFraction;
+      const reset = bucket.resetTime == null || bucket.resetTime === "" ? null : Date.parse(bucket.resetTime);
+      if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1 ||
+          (reset !== null && !Number.isFinite(reset)) || windows.some((w) => w.key === name[0])) return fail();
+      windows.push({ key: name[0], label: name[1], usedPercent: (1 - fraction) * 100, resetsAt: reset });
+    }
+  }
+  const summary = [];
+  for (const metric of payload.summary) {
+    const known = OLLAMA_METRICS[metric?.key];
+    if (!Array.isArray(known)) continue;
+    if (!Number.isFinite(metric.value) || summary.some((m) => m.key === metric.key) ||
+        (known[1] && metric.currency !== "USD") ||
+        (!known[1] && (metric.value < 0 || !Number.isInteger(metric.value)))) return fail();
+    summary.push({ key: metric.key, label: known[0], value: metric.value, currency: known[1] ? "USD" : null });
+  }
+  if (!windows.length && !summary.length) return fail();
+  return { plan: "Ollama Cloud", windows, summary };
 }
 
 // One provider call through the hub. `header` carries the literal "Bearer $TOKEN$" the hub

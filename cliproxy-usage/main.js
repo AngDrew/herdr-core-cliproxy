@@ -381,7 +381,7 @@ export default class CliproxyUsage extends View {
     } else {
       if (this.error) body = body.child(div().text_size(11.5).text_color(t.blocked).child(this.error));
       if (!this.groups.length && !this.error && !this.busy) {
-        body = body.child(div().text_size(11.5).text_color(t.dim).child("No Codex or Claude accounts on this hub yet."));
+        body = body.child(div().text_size(11.5).text_color(t.dim).child("No Codex, Claude or Ollama monitor accounts on this hub yet."));
       }
       for (const [index, group] of this.groups.entries()) {
         if (index > 0) body = body.child(div().h(1).w_full().flex_none().my(6).bg(t.border));
@@ -424,8 +424,25 @@ export default class CliproxyUsage extends View {
           .child(div().flex_none().text_size(10.5).text_color(t.dim).child(`${group.accounts.length} account${many ? "s" : ""}`)),
       );
     for (const pooled of group.pool) card = card.child(this.pool(t, group, pooled));
-    for (const account of group.accounts) card = card.child(this.resets(t, account, many));
+    for (const account of group.accounts) {
+      if (account.summary?.length) card = card.child(this.summary(t, account, many));
+      card = card.child(this.resets(t, account, many));
+    }
     return card;
+  }
+
+  summary(t, account, many) {
+    let rows = v_flex().gap(4).px(2);
+    if (many) rows = rows.child(div().text_size(10.5).text_color(t.dim).child(account.label || account.id));
+    for (const metric of account.summary ?? []) {
+      const value = metric.currency === "USD"
+        ? `USD ${metric.value.toFixed(Math.abs(metric.value) < 1 && metric.value !== 0 ? 5 : 2)}`
+        : metric.value.toFixed(0);
+      rows = rows.child(h_flex().gap(6)
+        .child(div().flex_1().text_size(10.5).text_color(t.muted).child(metric.label))
+        .child(div().text_size(11).text_color(t.foreground).child(value)));
+    }
+    return rows;
   }
 
   // One row per pooled window, like t3code's Limits: the big number, a bar whose fill is what is
@@ -436,9 +453,9 @@ export default class CliproxyUsage extends View {
     const fill = left <= 15 ? t.blocked : left <= 40 ? t.working : t.accent;
     const windows = group.accounts.flatMap((a) => a.windows ?? []).filter((w) => w.key === pooled.key);
     const resetsAt = Math.min(...windows.map((w) => w.resetsAt).filter((v) => typeof v === "number"));
-    const span = pooled.key === "session" ? 5 * 3600000 : 7 * 86400000;
-    // ponytail: window length by key (5 h / 7 d); read it from the hub if a plan ever differs.
-    const pace = Number.isFinite(resetsAt) ? Math.max(0, Math.min(100, ((resetsAt - Date.now()) / span) * 100)) : null;
+    const span = pooled.key === "session" ? 5 * 3600000 : pooled.key === "weekly" || pooled.key.startsWith("weekly_") ? 7 * 86400000 : null;
+    // ponytail: fixed session/weekly spans; billing periods have no pace tick until their actual length is available.
+    const pace = Number.isFinite(resetsAt) && span !== null ? Math.max(0, Math.min(100, ((resetsAt - Date.now()) / span) * 100)) : null;
     const banked = group.accounts.reduce((n, a) => n + (a.resetCredits?.availableCount ?? 0) +
       (a.resetGrants?.grants ?? []).filter((g) => g.expiresAt === null || g.expiresAt > Date.now())
         .reduce((sum, g) => sum + g.resetsLeft, 0), 0);
@@ -451,7 +468,7 @@ export default class CliproxyUsage extends View {
       on: { glyph: "→", color: t.dim, tip: "On pace: spending about as fast as the window elapses" },
       ahead: { glyph: "↗", color: t.working, tip: "Ahead of pace: spending faster than the window elapses" },
       behind: { glyph: "↘", color: t.done, tip: "Behind pace: spending slower than the window elapses" },
-      unknown: { glyph: "—", color: t.dim, tip: "Pace unavailable: no reset time reported" },
+      unknown: { glyph: "—", color: t.dim, tip: "Pace unavailable: no reset time or window duration reported" },
     }[paceState(left, pace)];
     let bar = div().relative().flex_1().min_w(0).h(30).rounded(5).bg(t.surface).overflow_hidden()
       .child(div().absolute().left(0).top(0).h(30).w(`${left}%`).bg(fill));

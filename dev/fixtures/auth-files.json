@@ -42,6 +42,15 @@
       "id": "gemini-1",
       "auth_index": "gemini-1",
       "provider": "gemini"
+    },
+    {
+      "id": "ollama-monitor.json",
+      "name": "ollama-monitor.json",
+      "auth_index": "ollama-1",
+      "provider": "ollama-usage",
+      "label": "Ollama Cloud",
+      "supports_quota": true,
+      "quota_provider": "ollama-usage"
     }
   ]
 }
