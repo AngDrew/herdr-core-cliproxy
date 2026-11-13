@@ -296,7 +296,7 @@ async function main() {
   );
   is(codexCall.header.Originator, "Codex Desktop", "codex originator header");
   const claudeCall = JSON.parse(bodies.get("a-claude-1"));
-  is(claudeCall.url, "https://api.anthropic.com/api/oauth/usage", "claude usage URL");
+  is(claudeCall.url, "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1", "claude usage URL includes reset grants");
   is(
     claudeCall.header.Authorization,
     "Bearer $TOKEN$",
@@ -305,8 +305,8 @@ async function main() {
   is(claudeCall.header["anthropic-beta"], "oauth-2025-04-20", "claude beta header");
   is(
     claudeCall.header["User-Agent"],
-    "claude-code/2.1.273",
-    "claude sends a Claude Code user agent",
+    "claude-cli/2.1.280 (external, cli)",
+    "claude sends the CLI user agent required for reset-grant eligibility",
   );
   includes(bodies.get("a-codex"), "$TOKEN$", "the api-call body holds the literal $TOKEN$");
 

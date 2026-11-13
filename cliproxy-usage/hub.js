@@ -5,7 +5,9 @@
 //
 //   fetchAccounts({ url, managementKey, fetchImpl?, providers?, timeoutMs?, onTimeout? })
 //     -> { accounts: Account[], error?: string, checkedAt }   checkedAt is an ISO 8601 string
-//   Account = { id, provider, email?, plan?, disabled, windows: Window[], resetCredits?, error? }
+//   Account = { id, provider, email?, plan?, disabled, windows: Window[], resetCredits?, resetGrants?, error? }
+//   resetGrants: Claude cedar_ember status, or null if unavailable. Grants carry label, resetsLeft,
+//                startsAt/expiresAt (epoch ms), usability and limit requirements.
 //   Window  = { key: "session" | "weekly", label: string, usedPercent: number | null,
 //               resetsAt: number | null }
 //   ResetCredits = { availableCount: number, credits: { id, expiresAt }[],
@@ -38,6 +40,7 @@ const ACCOUNT_CONCURRENCY = 4;
 // Codex banked-reset credits. The list and the consume call share one endpoint; the hub substitutes
 // the account's token for the literal "Bearer $TOKEN$" exactly as it does for usage.
 const CREDIT_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1";
 const CREDIT_RESET_TYPE = "codex_rate_limits";
 const CREDIT_STATUS_AVAILABLE = "available";
 // The hub's answer code -> the outcome the panel reports.
@@ -89,15 +92,17 @@ const PROVIDER_READERS = {
   },
   claude: {
     label: "Claude",
-    url: "https://api.anthropic.com/api/oauth/usage",
+    url: CLAUDE_USAGE_URL,
     header: () => ({
       Authorization: "Bearer $TOKEN$",
       "anthropic-beta": "oauth-2025-04-20",
-      // The OAuth usage endpoint answers 429 without a Claude Code user agent.
-      "User-Agent": "claude-code/2.1.273",
+      // Match the management UI: cedar_ember eligibility is gated on the CLI surface/version.
+      "User-Agent": "claude-cli/2.1.280 (external, cli)",
+      "Content-Type": "application/json",
     }),
     read: (usage) => ({
       plan: "Claude Subscription",
+      resetGrants: parseClaudeResetGrants(usage?.cedar_ember),
       windows: [
         claudeWindow(usage?.five_hour, SESSION_KEY, SESSION_LABEL),
         claudeWindow(usage?.seven_day, WEEKLY_KEY, WEEKLY_LABEL),
@@ -293,6 +298,100 @@ export async function consumeResetCredit(input = {}) {
       // The credit is spent either way, so the outcome stands and the warning explains the rest.
       return { outcome, warning: RESET_QUOTA_WARNING };
     }
+  }
+  return { outcome };
+}
+
+// Claude's grants are not Codex credits: eligibility, scope, cooldown and per-grant limits
+// come from cedar_ember. Reject malformed blocks rather than offering an unsafe spend.
+export function parseClaudeResetGrants(raw) {
+  if (!raw || typeof raw.eligible !== "boolean" || !Array.isArray(raw.grants ?? [])) return null;
+  const timestamp = (v) => v == null ? null : typeof v === "string" ? Date.parse(v) : NaN;
+  const cooldownUntil = timestamp(raw.cooldown_until);
+  if (cooldownUntil !== null && !Number.isFinite(cooldownUntil)) return null;
+  if (raw.at_limit != null && typeof raw.at_limit !== "boolean") return null;
+  const grants = [];
+  for (const g of raw.grants ?? []) {
+    if (!g || typeof g.id !== "string" || !/^[a-z0-9_-]{1,40}$/.test(g.id) || grants.some((v) => v.id === g.id)) return null;
+    if (![g.resets_total, g.resets_left].every((v) => Number.isInteger(v) && v >= 0) || g.resets_left > g.resets_total) return null;
+    if (["paused", "usable_now", "use_requires_limit", "gives_back_weekly"].some((key) => g[key] != null && typeof g[key] !== "boolean")) return null;
+    const startsAt = timestamp(g.starts_at), expiresAt = timestamp(g.ends_at);
+    if ([startsAt, expiresAt].some((v) => v !== null && !Number.isFinite(v))) return null;
+    const percentUsed = g.percent_used && typeof g.percent_used === "object" && !Array.isArray(g.percent_used)
+      ? Object.values(g.percent_used) : [];
+    const noUsage = g.gives_back_weekly === true && percentUsed.length > 0 && percentUsed.every((v) => v === 0);
+    grants.push({
+      id: g.id,
+      label: g.type === "full" ? "Full reset" : g.type === "session" ? "Session reset"
+        : /fable/i.test(String(g.label ?? "")) ? "Fable reset"
+        : typeof g.label === "string" ? g.label.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().slice(0, 120) : "Reset",
+      resetsLeft: g.resets_left,
+      startsAt, expiresAt,
+      paused: g.paused === true,
+      usableNow: g.usable_now === true,
+      requiresLimit: g.use_requires_limit !== false,
+      noUsage,
+    });
+  }
+  return { eligible: raw.eligible, atLimit: raw.at_limit === true, cooldownUntil, grants };
+}
+
+export function claudeGrantBlocker(status, grant, now = Date.now()) {
+  if (!status || !grant) return "Reset status unavailable";
+  if (!status.eligible) return "Account not eligible";
+  if (grant.resetsLeft <= 0) return "No resets left";
+  if (grant.paused) return "Reset paused";
+  if (grant.startsAt !== null && grant.startsAt > now) return "Not started yet";
+  if (grant.expiresAt !== null && grant.expiresAt <= now) return "Reset expired";
+  if (status.cooldownUntil !== null && status.cooldownUntil > now) return "Reset cooldown active";
+  if (!grant.usableNow) return "Not usable right now";
+  if (grant.requiresLimit && !status.atLimit) return "Available when this account reaches its limit";
+  if (grant.noUsage) return "Nothing to reset right now";
+  return null;
+}
+
+// No automatic retry: once a claim may have reached Anthropic, an ambiguous answer must keep
+// the caller's operation journal locked. requestId identifies ONE spend, not a reusable grant.
+export async function consumeClaudeResetGrant(input = {}) {
+  const { url, managementKey, accountId, grantId, requestId, fetchImpl = defaultFetch,
+    timeoutMs = DEFAULT_TIMEOUT_MS, onTimeout } = input;
+  if (typeof grantId !== "string" || !/^[a-z0-9_-]{1,40}$/.test(grantId) ||
+      typeof requestId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(requestId)) {
+    throw phraseFailure("The Claude reset request is not valid.");
+  }
+  const options = { base: managementBase(url), managementKey, fetchImpl, timeoutMs, onTimeout };
+  const listed = await managementRequest({ ...options, path: "auth-files" }).catch((e) => { throw phraseFailure(failureText(e)); });
+  const files = Array.isArray(listed?.files) ? listed.files : [];
+  const file = files.find((v) => v?.id === accountId && v.provider === "claude" && v.disabled !== true);
+  if (!file) throw phraseFailure("The Claude hub account is missing or disabled.");
+  const header = { ...PROVIDER_READERS.claude.header(file), "Content-Type": "application/json" };
+  let status, organization;
+  try {
+    const usage = parseProviderBody(await apiCall({ ...options, file, header, method: "GET", url: CLAUDE_USAGE_URL }));
+    status = parseClaudeResetGrants(usage?.cedar_ember);
+    const blocker = claudeGrantBlocker(status, status?.grants.find((g) => g.id === grantId));
+    if (blocker) throw phraseFailure(blocker);
+    const profile = parseProviderBody(await apiCall({ ...options, file, header, method: "GET", url: "https://api.anthropic.com/api/oauth/profile" }));
+    organization = profile?.organization?.uuid;
+    if (typeof organization !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(organization)) {
+      throw phraseFailure("The hub could not read the Claude organization.");
+    }
+  } catch (e) { throw phraseFailure(failureText(e)); }
+  let outcome;
+  try {
+    const body = parseProviderBody(await apiCall({
+      ...options, timeoutMs: Math.max(timeoutMs, 25000), file, header, method: "POST",
+      url: `https://api.anthropic.com/api/organizations/${organization}/reset_rate_limits`,
+      data: JSON.stringify({ program: "cedar_ember", grant_id: grantId, request_id: requestId }),
+    }));
+    outcome = body?.result;
+    if (!["reset", "already_used", "not_limited", "cooldown", "ineligible", "unavailable"].includes(outcome)) throw new Error();
+  } catch {
+    return { outcome: "unknown", warning: "Claude reset outcome unknown. Check the hub before attempting another reset." };
+  }
+  if (outcome === "reset" || outcome === "already_used") {
+    try { await managementRequest({ ...options, path: "reset-quota", body: { auth_index: file.auth_index } }); }
+    catch { return { outcome, warning: RESET_QUOTA_WARNING }; }
   }
   return { outcome };
 }
@@ -509,6 +608,7 @@ async function readAccount({ file, base, managementKey, fetchImpl, timeoutMs, on
       ...known,
       ...(read.plan ? { plan: read.plan } : {}),
       windows: read.windows,
+      ...(file.provider === "claude" ? { resetGrants: read.resetGrants } : {}),
     };
   } catch (error) {
     // One unreadable account keeps its own "probe failed" row; the other accounts still report.

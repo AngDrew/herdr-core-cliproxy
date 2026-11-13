@@ -123,6 +123,11 @@ async function handle(request, response) {
 // per-account failure row depends on that split.
 async function callProvider(authIndex, call) {
   const url = typeof call?.url === "string" ? call.url : "";
+  if (url.endsWith("/profile")) return { payload: { status_code: 200, body: JSON.stringify({ organization: { uuid: "11111111-2222-3333-4444-555555555555" } }) } };
+  if (url.endsWith("/reset_rate_limits")) {
+    consumes += 1;
+    return { payload: { status_code: 200, body: JSON.stringify({ result: "reset" }) } };
+  }
   // A Codex reset credit being spent: answer what a real hub answers and log which credit it was.
   if (url.endsWith("/rate-limit-reset-credits/consume")) {
     let sent = {};

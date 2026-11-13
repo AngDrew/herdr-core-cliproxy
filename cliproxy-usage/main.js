@@ -7,10 +7,11 @@
 // All hub reading is ./hub.js's job; this file only turns its result into elements and writes
 // config.json. The management key is masked in the form, written only to config.json, and never
 // logged or put in an error string: a fixed phrase carries every failure instead.
+import { randomUUID } from "crypto";
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex, Input, InputState } from "gpui-base";
 import { appHome, closeOverlay, nextCommand, openOverlay, props, readTextFile, run, theme, writeTextFile } from "herdr";
-import { consumeResetCredit, fetchAccounts, paceState, poolByProvider } from "./hub.js";
+import { claudeGrantBlocker, consumeClaudeResetGrant, consumeResetCredit, fetchAccounts, paceState, poolByProvider } from "./hub.js";
 
 const MOD = "cliproxy-usage";
 const CONFIG_FILE = "config.json";
@@ -19,12 +20,18 @@ const CONFIG_FILE = "config.json";
 const REFRESH_MS = 900000;
 const TIMEOUT_MS = 15000;
 
-// Fixed sentences for the four answers a consume can give; a hub body never becomes UI text.
+// Fixed outcome sentences; a hub body never becomes UI text.
 const OUTCOME_TEXT = {
   reset: "Reset applied.",
   alreadyRedeemed: "That credit was already redeemed.",
   nothingToReset: "Nothing to reset right now.",
   noCredit: "No credit available on this account.",
+  already_used: "That reset was already used.",
+  not_limited: "Nothing to reset right now.",
+  cooldown: "Claude reset cooldown is active.",
+  ineligible: "This account is not eligible for that reset.",
+  unavailable: "That Claude reset is unavailable.",
+  unknown: "Claude reset outcome unknown. Check the hub before attempting another reset.",
 };
 
 // The mod's own folder, which the app makes and the person owns. `appHome()` is a host call, so
@@ -103,24 +110,6 @@ function countdown(resetsAt) {
   return `in ${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
-const leftPercentOf = (usedPercent) =>
-  typeof usedPercent === "number" ? Math.max(0, Math.min(100, 100 - usedPercent)) : null;
-
-// An account's number is its tightest window: the one that runs out first is the one that stops work.
-function accountLeft(account) {
-  const lefts = (account.windows ?? [])
-    .map((window) => leftPercentOf(window.usedPercent))
-    .filter((left) => left !== null);
-  return lefts.length ? Math.min(...lefts) : null;
-}
-
-function barColor(t, leftPercent) {
-  if (leftPercent === null) return t.dim;
-  if (leftPercent <= 15) return t.blocked;
-  if (leftPercent <= 40) return t.working;
-  return t.done;
-}
-
 export default class CliproxyUsage extends View {
   init(_props, cx) {
     this.config = null;
@@ -133,6 +122,7 @@ export default class CliproxyUsage extends View {
     // until a "reset" command arrives, which only the confirm dialog sends.
     this.notice = null;
     this.pendingReset = null;
+    this.resetBusy = false;
     // Until config.json has been read once, "no hub yet" would be a guess, so the panel says it is
     // still reading instead.
     this.ready = false;
@@ -275,12 +265,18 @@ export default class CliproxyUsage extends View {
   }
 
   // A click only arms the choice and asks; the confirm dialog's command is what spends.
-  useReset(account) {
+  useReset(account, grant = null) {
+    if (this.resetBusy || !this.config) return;
     const credits = account.resetCredits;
-    if (!credits || !credits.nextCreditId) return;
+    if (grant ? claudeGrantBlocker(account.resetGrants, grant) : !credits?.nextCreditId) return;
     const email = account.email ?? account.id ?? "this account";
-    this.pendingReset = { accountId: account.id, creditId: credits.nextCreditId, email };
-    const count = `${credits.availableCount} banked Codex reset credit${credits.availableCount === 1 ? "" : "s"}`;
+    this.pendingReset = {
+      accountId: account.id, creditId: credits?.nextCreditId, grantId: grant?.id,
+      provider: account.provider, config: this.config,
+    };
+    const count = grant
+      ? `${grant.resetsLeft} ${grant.label || "Claude"} reset${grant.resetsLeft === 1 ? "" : "s"}`
+      : `${credits.availableCount} banked Codex reset credit${credits.availableCount === 1 ? "" : "s"}`;
     openOverlay({
       mod: "confirm",
       props: {
@@ -296,33 +292,52 @@ export default class CliproxyUsage extends View {
 
   spendReset(cx) {
     const pending = this.pendingReset;
-    // Cleared first: a failure or a double command can never spend twice.
     this.pendingReset = null;
-    if (!pending || !this.config) return;
+    if (!pending || this.resetBusy || !this.config || pending.config.url !== this.config.url ||
+        pending.config.managementKey !== this.config.managementKey) return;
+    this.resetBusy = true;
     cx.spawn(async (cx) => {
-      this.notice = { text: "Spending a reset credit…", tone: "muted" };
+      this.notice = { text: "Spending a reset…", tone: "muted" };
       cx.notify();
-      let text;
-      let tone = "done";
+      let text, journal;
+      let tone = "done", uncertain = false;
+      const journalPath = configPath().replace(/config\.json$/, "reset-operation.json");
       try {
-        const result = await consumeResetCredit({
-          url: this.config.url,
-          managementKey: this.config.managementKey,
-          accountId: pending.accountId,
-          creditId: pending.creditId,
-          timeoutMs: TIMEOUT_MS,
+        const options = {
+          ...pending.config, accountId: pending.accountId, creditId: pending.creditId,
+          grantId: pending.grantId, timeoutMs: TIMEOUT_MS,
           onTimeout: (callback, ms) => cx.timer.after(ms, callback),
-        });
-        text = OUTCOME_TEXT[result?.outcome] ?? "The reset did not go through.";
-        if (result?.warning) text = `${text} ${result.warning}`;
-        if (result?.outcome !== "reset") tone = "blocked";
+        };
+        if (pending.provider === "claude") {
+          // ponytail: one durable Claude lock across accounts; per-account journals if needed.
+          // An ambiguous POST stays locked even across reloads. Never automatically retry it.
+          const previous = await readConfigText(journalPath);
+          if (previous !== null && previous.trim() !== "{}") {
+            throw new Error("A previous Claude reset is unresolved. Check the hub; clear reset-operation.json only after confirming its outcome.");
+          }
+          options.requestId = randomUUID();
+          const record = JSON.stringify({ accountId: pending.accountId, grantId: pending.grantId, requestId: options.requestId });
+          await writeTextFile(journalPath, record, previous);
+          journal = record;
+        }
+        const result = await (pending.provider === "claude" ? consumeClaudeResetGrant(options) : consumeResetCredit(options));
+        uncertain = result.outcome === "unknown";
+        text = OUTCOME_TEXT[result.outcome] ?? "The reset did not go through.";
+        if (result.warning && !uncertain) text = `${text} ${result.warning}`;
+        if (result.outcome !== "reset" || result.warning) tone = "blocked";
       } catch (error) {
-        text = typeof error?.message === "string" && error.message ? error.message : "The reset did not go through.";
+        text = error?.message || "The reset did not go through.";
         tone = "blocked";
+      } finally {
+        if (journal && !uncertain) {
+          try { await writeTextFile(journalPath, "{}\n", journal); }
+          catch { text = `${text} The reset journal could not be cleared; check the hub before trying again.`; tone = "blocked"; }
+        }
+        this.resetBusy = false;
+        this.notice = { text, tone };
+        this.refreshNow(cx);
+        cx.notify();
       }
-      this.notice = { text, tone };
-      this.refreshNow(cx);
-      cx.notify();
     });
   }
 
@@ -367,7 +382,10 @@ export default class CliproxyUsage extends View {
       if (!this.groups.length && !this.error && !this.busy) {
         body = body.child(div().text_size(11.5).text_color(t.dim).child("No Codex or Claude accounts on this hub yet."));
       }
-      for (const group of this.groups) body = body.child(this.card(t, group));
+      for (const [index, group] of this.groups.entries()) {
+        if (index > 0) body = body.child(div().h(1).w_full().flex_none().my(6).bg(t.border));
+        body = body.child(this.card(t, group));
+      }
     }
     return v_flex().size_full().min_h(0).bg(t.background).text_color(t.foreground)
       .child(
@@ -398,7 +416,7 @@ export default class CliproxyUsage extends View {
           .child(div().flex_none().text_size(10.5).text_color(t.dim).child(`${group.accounts.length} account${many ? "s" : ""}`)),
       );
     for (const pooled of group.pool) card = card.child(this.pool(t, group, pooled));
-    for (const account of group.accounts) card = card.child(this.account(t, account, many));
+    for (const account of group.accounts) card = card.child(this.resets(t, account, many));
     return card;
   }
 
@@ -413,7 +431,9 @@ export default class CliproxyUsage extends View {
     const span = pooled.key === "session" ? 5 * 3600000 : 7 * 86400000;
     // ponytail: window length by key (5 h / 7 d); read it from the hub if a plan ever differs.
     const pace = Number.isFinite(resetsAt) ? Math.max(0, Math.min(100, ((resetsAt - Date.now()) / span) * 100)) : null;
-    const banked = group.accounts.reduce((n, a) => n + (a.resetCredits?.availableCount ?? 0), 0);
+    const banked = group.accounts.reduce((n, a) => n + (a.resetCredits?.availableCount ?? 0) +
+      (a.resetGrants?.grants ?? []).filter((g) => g.expiresAt === null || g.expiresAt > Date.now())
+        .reduce((sum, g) => sum + g.resetsLeft, 0), 0);
     const chipText = [
       Number.isFinite(resetsAt) ? `↻ ${(countdown(resetsAt) ?? "").replace(/^in /, "")}` : null,
       banked > 0 ? `${banked} banked` : null,
@@ -448,47 +468,36 @@ export default class CliproxyUsage extends View {
       .child(bar);
   }
 
-  account(t, account, showChips) {
-    const left = accountLeft(account);
-    let row = v_flex().gap(3).px(2)
-      .child(
-        h_flex().gap(6)
-          .child(
-            div().flex_1().min_w(0).truncate().text_size(11).text_color(account.error ? t.muted : t.foreground)
-              .child(account.email ?? account.id ?? account.provider),
-          )
-          .when(Boolean(account.plan), (el) => el.child(div().flex_none().text_size(10).text_color(t.dim).child(String(account.plan))))
-          .child(div().flex_none().text_size(11).text_color(barColor(t, left)).child(left === null ? "—" : `${Math.round(left)}%`)),
-      );
-    if (account.error) {
-      return row.child(div().text_size(10.5).text_color(t.blocked).child(account.error));
-    }
-    if (showChips && account.windows.length) {
-      row = row.child(h_flex().gap(4).flex_wrap().children(account.windows.map((window) => this.chip(t, window))));
-    }
-    // Banked reset credits: how many, when the next one runs out, and the action that spends one.
+  resets(t, account, many) {
+    let row = v_flex().gap(4).px(2);
+    const identity = account.email ?? account.id;
+    if (account.error) return row.child(div().text_size(10.5).text_color(t.blocked).tooltip(identity).child(account.error));
+    const add = (label, id, blocker, action) => {
+      row = row.child(h_flex().gap(6).items_center()
+        .child(div().flex_1().min_w(0).text_size(10.5).text_color(t.muted)
+          .tooltip(many ? identity : label).child(label))
+        .child(blocker
+          ? div().text_size(10).text_color(t.dim).tooltip(blocker).child("Unavailable")
+          : this.button(t, id, "Use reset", false, action).tooltip(identity)));
+    };
     const credits = account.resetCredits;
-    if (credits && credits.availableCount > 0 && credits.nextCreditId) {
+    if (credits?.availableCount > 0 && credits.nextCreditId) {
       const when = countdown(credits.nextExpiresAt);
-      row = row.child(
-        h_flex().gap(6).items_center()
-          .child(
-            div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.muted)
-              .child(`${credits.availableCount} banked${when ? ` · expires ${when}` : ""}`),
-          )
-          .child(this.button(t, `cpu-reset-${account.id}`, "Use reset", false, () => this.useReset(account))),
-      );
+      add(`${credits.availableCount} banked${when ? ` · expires ${when}` : ""}`,
+        `cpu-reset-${account.id}`, this.resetBusy ? "A reset is in progress" : null, () => this.useReset(account));
+    }
+    if (account.provider === "claude") {
+      const grants = account.resetGrants?.grants.filter((g) => g.resetsLeft > 0 && (g.expiresAt === null || g.expiresAt > Date.now()));
+      if (!grants?.length) row = row.child(div().text_size(10.5).text_color(t.dim).tooltip(identity)
+        .child(account.resetGrants ? "No banked Claude resets" : "Claude reset grants unavailable"));
+      for (const grant of grants ?? []) {
+        const when = countdown(grant.expiresAt);
+        add(`${grant.label || "Reset"} · ${grant.resetsLeft} left${when ? ` · expires ${when}` : ""}`,
+          `cpu-reset-${account.id}-${grant.id}`, this.resetBusy ? "A reset is in progress" : claudeGrantBlocker(account.resetGrants, grant),
+          () => this.useReset(account, grant));
+      }
     }
     return row;
-  }
-
-  chip(t, window) {
-    const left = leftPercentOf(window.usedPercent);
-    const resets = countdown(window.resetsAt);
-    return h_flex().flex_none().gap(4).rounded(4).px(5).py(1).bg(t.surface)
-      .child(div().text_size(10).text_color(t.dim).child(window.label))
-      .child(div().text_size(10).text_color(barColor(t, left)).child(left === null ? "—" : `${Math.round(left)}%`))
-      .when(Boolean(resets), (el) => el.child(div().text_size(10).text_color(t.dim).child(`· ${resets}`)));
   }
 
   settingsRender(t) {
