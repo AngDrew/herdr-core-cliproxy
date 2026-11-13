@@ -11,6 +11,7 @@ Despite the repository name, this runs in **herdr-app**, not as a herdr-core plu
 ## Features
 
 - **Claude and Codex gauges:** Session, Weekly, and model-scoped Claude windows such as **Weekly · Fable**, when reported by the hub.
+- **Usage tab beside Files and Changes:** opens and closes the existing side panel, before the window controls—not a separate column beyond the close button. The panel choice is remembered per space.
 - **Clean subscription sections:** a divider separates Claude and Codex; no redundant email, plan, percentage, or miniature quota rows beneath the gauges.
 - **Pace indicators:** a white tick marks the even-spending target; hover over the arrow for an explanation.
 - **Manual resets:** see banked Codex credits and Claude reset grants, including Fable/full resets when available, with remaining count and expiry.
@@ -55,33 +56,39 @@ Copy-Item ./cliproxy-usage/* -Destination $mod -Force
 
 For updates, run `git pull` in the clone and repeat the copy command. The repository does not contain `config.json`, so copying its mod files does not overwrite your saved credentials.
 
-### 2. Add the panel to your layout
+### 2. Add Usage to the existing panel stack
 
-Back up `~/.config/herdr-app/layouts/main.json`. If its root is a `row`, append this object to the root's `children` array to dock the panel on the right. Preserve your existing children and do not add a second `usage` column if one already exists.
+Back up `~/.config/herdr-app/layouts/main.json`. Find the stack with `"id": "panel-body"` inside the existing `panel` column, and append this object to **that stack's `children` array**, alongside `files` and `changes`:
 
 ```json
 {
   "id": "usage",
-  "type": "column",
-  "size": { "px": 320 },
-  "min": 220,
-  "max": 600,
-  "background": "chrome",
-  "children": [
-    {
-      "id": "usage-body",
-      "type": "block",
-      "content": { "mod": "cliproxy-usage" }
-    }
-  ]
+  "type": "block",
+  "content": { "mod": "cliproxy-usage" }
 }
 ```
 
-For a different layout structure, place the same column inside the row where you want it. The column is resizable between 220 and 600 pixels.
+Keep the existing Files and Changes entries and the panel's width settings. **If upgrading from the original standalone layout, remove the old root-level `usage` column** so there is only one Usage view. Do not add a new outer column: that places the content beyond the titlebar's window controls.
 
-### 3. Connect your hub
+### 3. Add the titlebar button
 
-Click **Set up**, enter the hub URL and management key, then **Save**. A URL ending in `management.html` is accepted. The optional label replaces the hub hostname in the header.
+The bundled Tabs mod currently names its panel buttons explicitly. Back up `~/.config/herdr-app/mods/tabs/main.js`, then apply the small [Tabs patch](integration/tabs.patch) from the repository root:
+
+```powershell
+$patch = Join-Path $PWD 'integration/tabs.patch'
+$appHome = Join-Path $HOME '.config/herdr-app'
+git -C $appHome apply --check --ignore-space-change $patch
+if ($LASTEXITCODE -ne 0) { throw 'Patch did not match; check whether it is already applied or your Tabs mod differs.' }
+git -C $appHome apply --ignore-space-change $patch
+```
+
+The patch adds **Usage** after **Changes**, using the same open/close and per-space panel state. It preserves your Files/Changes choices and only enables Usage when the layout contains the `usage` child. Its icon is included in the mod folder copied in step 1.
+
+This patch targets the bundled Tabs mod from herdr-app 0.1.15. If an app update replaces that mod, check whether the patch needs to be reapplied; do not overwrite newer Tabs code with an old copy.
+
+### 4. Connect your hub
+
+Click the **Usage** tab, then **Set up**, enter the hub URL and management key, and **Save**. A URL ending in `management.html` is accepted. The optional label replaces the hub hostname in the header.
 
 Use **Settings** to change the connection later. No keyboard binding is required or installed.
 
@@ -120,6 +127,7 @@ Use a Node.js version with built-in `fetch` (Node 18+). From the repository root
 node dev/hub.test.js
 node dev/claude-reset.test.js
 node dev/panel.test.js
+node dev/tab-integration.test.js
 ```
 
 These checks use fake responses and do not contact your hub or spend real resets.
@@ -148,4 +156,4 @@ herdr-app status
 
 ## Uninstall
 
-Remove the `usage` column from your layout, then delete `~/.config/herdr-app/mods/cliproxy-usage/`. Deleting the folder also removes its saved credentials and local reset journal.
+Remove the `usage` child from `panel-body`. Undo the two Tabs changes using `integration/tabs.patch` in reverse (check it still applies first), or restore your backed-up Tabs file if it has not otherwise changed. Then delete `~/.config/herdr-app/mods/cliproxy-usage/`. Deleting the folder also removes its saved credentials and local reset journal.

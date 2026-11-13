@@ -11,6 +11,7 @@ const grant = {
 const block = { eligible: true, at_limit: false, grants: [grant] };
 const status = parseClaudeResetGrants(block);
 assert.equal(status.grants[0].resetsLeft, 1);
+assert.equal(parseClaudeResetGrants({ ...block, grants: [{ ...grant, type: "full" }] }).grants[0].label, "Fable reset", "Fable launch grant keeps its scoped display label even when type is full");
 assert.equal(status.grants[0].expiresAt, Date.parse(grant.ends_at));
 assert.equal(claudeGrantBlocker(status, status.grants[0]), null);
 for (const patch of [

@@ -322,8 +322,8 @@ export function parseClaudeResetGrants(raw) {
     const noUsage = g.gives_back_weekly === true && percentUsed.length > 0 && percentUsed.every((v) => v === 0);
     grants.push({
       id: g.id,
-      label: g.type === "full" ? "Full reset" : g.type === "session" ? "Session reset"
-        : /fable/i.test(String(g.label ?? "")) ? "Fable reset"
+      label: /fable/i.test(String(g.label ?? "")) ? "Fable reset"
+        : g.type === "full" ? "Full reset" : g.type === "session" ? "Session reset"
         : typeof g.label === "string" ? g.label.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().slice(0, 120) : "Reset",
       resetsLeft: g.resets_left,
       startsAt, expiresAt,
