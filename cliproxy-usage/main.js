@@ -352,10 +352,11 @@ export default class CliproxyUsage extends View {
   }
 
   button(t, id, text, primary, action) {
-    return h_flex().id(id).h(24).px(8).flex_none().rounded(6).border_1()
-      .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+    return h_flex().id(id).h(24).px(8).flex_none().items_center().justify_center().rounded(6).border_1()
+      .border_color(primary ? t.solid : t.border).bg(primary ? t.solid : t.background)
       .text_color(primary ? t.solid_foreground : t.muted).text_size(11).font_medium()
-      .cursor_pointer().hover((style) => style.opacity(0.85)).on_click(action).child(text);
+      .cursor_pointer().hover((style) => primary ? style.opacity(0.88) : style.bg(t.hover).text_color(t.foreground))
+      .on_click(action).child(text);
   }
 
   panel(t) {
@@ -364,7 +365,7 @@ export default class CliproxyUsage extends View {
       : this.checkedAt
         ? `checked ${clockOf(this.checkedAt) ?? "—"}`
         : "not checked yet";
-    let body = v_flex().flex_1().min_h(0).gap(8).px(12).pb(12).overflow_y_scrollbar();
+    let body = v_flex().id("cpu-content").flex_1().min_h(0).gap(10).px(12).pb(12).overflow_y_scrollbar();
     if (!this.config) {
       if (!this.ready) {
         body = body.child(div().text_size(11.5).text_color(t.dim).child("Reading the hub settings…"));
@@ -387,14 +388,21 @@ export default class CliproxyUsage extends View {
         body = body.child(this.card(t, group));
       }
     }
-    return v_flex().size_full().min_h(0).bg(t.background).text_color(t.foreground)
+    // Match the native Files/Changes frame, including the clipped radius and 42 px header.
+    return v_flex().id("cliproxy-usage").size_full().min_h(0).rounded(10).overflow_hidden()
+      .bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(
-        h_flex().flex_none().gap(6).px(12).pt(10).pb(4)
-          .child(div().flex_1().min_w(0).truncate().text_size(12.5).font_semibold().text_color(t.foreground).child(this.hubLabel()))
-          .child(this.button(t, "cpu-refresh", "Refresh", false, (_event, cx) => this.refreshNow(cx)))
+        h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
+          .child(div().flex_1().font_semibold().child("Usage"))
+          .child(this.button(t, "cpu-refresh", this.busy ? "Checking…" : "Refresh", false, (_event, cx) => this.refreshNow(cx)))
           .child(this.button(t, "cpu-settings", "Settings", false, () => openSettings())),
       )
-      .child(h_flex().flex_none().px(12).pb(8).child(div().text_size(10.5).text_color(t.dim).child(checked)))
+      .child(
+        h_flex().flex_none().px(14).py(10).gap(8).items_center()
+          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).tooltip(this.hubLabel())
+            .child(this.config ? this.hubLabel() : "CLIProxyAPI hub"))
+          .child(div().flex_none().text_size(10.5).text_color(t.dim).child(checked)),
+      )
       .when(Boolean(this.notice), (el) =>
         el.child(
           h_flex().flex_none().px(12).pb(8).child(
@@ -421,11 +429,11 @@ export default class CliproxyUsage extends View {
   }
 
   // One row per pooled window, like t3code's Limits: the big number, a bar whose fill is what is
-  // left, a white tick where an even burn rate would be by now, and a chip with the reset
+  // left, a contrasting tick where an even burn rate would be by now, and a chip with the reset
   // countdown and the banked reset credits.
   pool(t, group, pooled) {
     const left = Math.max(0, Math.min(100, Math.round(pooled.leftPercent)));
-    const fill = left <= 15 ? t.blocked : group.provider === "claude" ? "#8a4b2f" : "#7a7a7a";
+    const fill = left <= 15 ? t.blocked : left <= 40 ? t.working : t.accent;
     const windows = group.accounts.flatMap((a) => a.windows ?? []).filter((w) => w.key === pooled.key);
     const resetsAt = Math.min(...windows.map((w) => w.resetsAt).filter((v) => typeof v === "number"));
     const span = pooled.key === "session" ? 5 * 3600000 : 7 * 86400000;
@@ -447,20 +455,20 @@ export default class CliproxyUsage extends View {
     }[paceState(left, pace)];
     let bar = div().relative().flex_1().min_w(0).h(30).rounded(5).bg(t.surface).overflow_hidden()
       .child(div().absolute().left(0).top(0).h(30).w(`${left}%`).bg(fill));
-    if (pace !== null) bar = bar.child(div().absolute().top(0).left(`${pace}%`).w(2).h(30).bg("#ffffff"));
+    if (pace !== null) bar = bar.child(div().absolute().top(0).left(`${pace}%`).w(2).h(30).bg(t.foreground));
     if (chipText) {
       bar = bar.child(
         h_flex().absolute().right(4).top(6).h(18).px(5).items_center().rounded(4).bg(t.background)
-          .text_size(10).text_color(t.foreground).child(chipText),
+          .text_size(10.5).text_color(t.foreground).child(chipText),
       );
     }
     return h_flex().gap(10).items_center().p(8).rounded(8).border_1().border_color(t.border).bg(t.raised)
       .child(
         v_flex().w(92).flex_none().min_w(0)
-          .child(div().truncate().text_size(10.5).font_medium().text_color(t.foreground).child(label))
+          .child(div().truncate().text_size(11).font_medium().text_color(t.foreground).child(label))
           .child(
             h_flex().gap(4).items_end()
-              .child(div().text_size(22).font_semibold().text_color(t.foreground).child(`${left}%`))
+              .child(div().text_size(24).font_semibold().text_color(t.foreground).child(`${left}%`))
               .child(div().pb(3).text_size(10).text_color(t.dim).child("left"))
               .child(div().pb(2).text_size(12).text_color(trend.color).tooltip(trend.tip).child(trend.glyph)),
           ),
@@ -474,7 +482,7 @@ export default class CliproxyUsage extends View {
     if (account.error) return row.child(div().text_size(10.5).text_color(t.blocked).tooltip(identity).child(account.error));
     const add = (label, id, blocker, action) => {
       row = row.child(h_flex().gap(6).items_center()
-        .child(div().flex_1().min_w(0).text_size(10.5).text_color(t.muted)
+        .child(div().flex_1().min_w(0).text_size(11).text_color(t.muted)
           .tooltip(many ? identity : label).child(label))
         .child(blocker
           ? div().text_size(10).text_color(t.dim).tooltip(blocker).child("Unavailable")

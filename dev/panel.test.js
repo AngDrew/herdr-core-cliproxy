@@ -3,21 +3,21 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import { randomUUID } from "node:crypto";
-import { claudeGrantBlocker } from "../cliproxy-usage/hub.js";
+import { claudeGrantBlocker, paceState } from "../cliproxy-usage/hub.js";
 
 const journal = new Map(), tasks = [], overlays = [];
 let claims = 0, answer = "unknown";
 function element() {
-  const node = { items: [], child(v) { this.items.push(v); return proxy; }, children(v) { this.items.push(...v); return proxy; } };
+  const node = { styles: {}, items: [], child(v) { this.items.push(v); return proxy; }, children(v) { this.items.push(...v); return proxy; } };
   const proxy = new Proxy(node, { get(target, key) {
     if (key in target) return target[key];
     if (key === "when") return (test, fn) => test ? fn(proxy) : proxy;
-    return () => proxy;
+    return (...args) => { node.styles[key] = args; return proxy; };
   } });
   return proxy;
 }
 const context = vm.createContext({
-  View: class {}, div: element, h_flex: element, v_flex: element, randomUUID, claudeGrantBlocker,
+  View: class {}, div: element, h_flex: element, v_flex: element, randomUUID, claudeGrantBlocker, paceState,
   consumeClaudeResetGrant: async () => { claims++; return { outcome: answer }; },
   appHome: () => "/test", openOverlay: (o) => overlays.push(o),
   readTextFile: async (p) => journal.get(p) ?? null,
@@ -67,4 +67,26 @@ assert.equal(claims, 2, "double command only sends one new claim");
 assert.equal([...journal.values()][0].trim(), "{}", "terminal outcome clears journal");
 assert.equal(reload.notice.text, "Reset applied.");
 assert.equal(reload.resetBusy, false);
+// The native panel frame and quota colors must follow the supplied theme, not fixed hex colors.
+function nodes(node) { return typeof node === "string" ? [] : [node, ...(node?.items ?? []).flatMap(nodes)]; }
+for (const background of ["#151b18", "#fafafa"]) {
+  const t = { background, foreground: background === "#fafafa" ? "#202020" : "#eeeeee",
+    border: "#556677", surface: "#334455", raised: "#445566", accent: "#abcdef", working: "#efabcd", blocked: "#cdefab" };
+  p.groups = []; p.busy = false; p.notice = null;
+  const frame = p.panel(t);
+  assert.equal(frame.styles.id[0], "cliproxy-usage");
+  assert.equal(frame.styles.rounded[0], 10);
+  assert.ok(frame.styles.border_1 && frame.styles.overflow_hidden);
+  assert.equal(frame.styles.border_color[0], t.border);
+  assert.equal(frame.styles.bg[0], background);
+  assert.equal(frame.items[0].styles.h[0], 42, "same header height as Files/Changes");
+  assert.equal(frame.items[0].styles.border_color[0], t.border);
+  for (const [leftPercent, color] of [[80, t.accent], [30, t.working], [0, t.blocked]]) {
+    const gauge = p.pool(t, { accounts: [{ windows: [{ key: "session", resetsAt: Date.now() + 3600000 }] }] }, { key: "session", leftPercent });
+    const backgrounds = nodes(gauge).map((n) => n.styles.bg?.[0]);
+    assert.ok(backgrounds.includes(color), "quota fill uses the theme's semantic color");
+    assert.ok(backgrounds.includes(t.foreground), "pace tick contrasts in dark and light themes");
+  }
+}
+assert.ok(!/#[0-9a-f]{3,8}\b/i.test(source), "no hard-coded color literals in the view");
 console.log("panel.test.js: passed");

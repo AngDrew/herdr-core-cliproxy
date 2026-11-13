@@ -4,16 +4,20 @@ A **herdr-app mod** for monitoring [CLIProxyAPI](https://github.com/router-for-m
 
 Despite the repository name, this runs in **herdr-app**, not as a herdr-core plugin. Developed against herdr-app **0.1.15** and herdr-core **0.1.21**.
 
-![Usage panel with Claude and Codex gauges, pace arrows, reset counts and expiry](screenshot.png)
+| Dark (Graphite) | Light (Paper) |
+| --- | --- |
+| ![Usage panel in Graphite](screenshot.png) | ![Usage panel in Paper](screenshot-light.png) |
 
-*Screenshot uses local stub data, not real accounts.*
+*Screenshots use local stub data, not real accounts.*
 
 ## Features
 
 - **Claude and Codex gauges:** Session, Weekly, and model-scoped Claude windows such as **Weekly · Fable**, when reported by the hub.
 - **Usage tab beside Files and Changes:** opens and closes the existing side panel, before the window controls—not a separate column beyond the close button. The panel choice is remembered per space.
 - **Clean subscription sections:** a divider separates Claude and Codex; no redundant email, plan, percentage, or miniature quota rows beneath the gauges.
-- **Pace indicators:** a white tick marks the even-spending target; hover over the arrow for an explanation.
+- **Native panel styling:** the same rounded border, clipped corners, 42px header, and header divider as Files/Changes.
+- **Theme-aware colors:** follows herdr-app's light, dark, and custom themes; no fixed provider colors or white-only markers.
+- **Pace indicators:** a contrasting tick marks the even-spending target; hover over the arrow for an explanation.
 - **Manual resets:** see banked Codex credits and Claude reset grants, including Fable/full resets when available, with remaining count and expiry.
 - **Confirmation before spending:** **Use reset** identifies the account and asks before redeeming anything.
 - **Automatic refresh every 15 minutes**, plus a **Refresh** button. Countdown text is calculated when the panel repaints, not by a second-by-second timer.
@@ -30,6 +34,12 @@ Bars and percentages show quota **left**, not quota used.
 | — Unavailable | The hub did not report a reset time, so pace cannot be calculated. |
 
 The target is the percentage of time remaining in the window. For example, halfway through a window, the even-spending target is **50% quota left**.
+
+## Appearance
+
+Usage automatically follows the theme selected in herdr-app; there is no separate mod theme to configure. Normal quota bars use the theme's **accent** color, low quota (16–40% left) uses **working**, and critical quota (15% or less) uses **blocked**. The pace marker uses the theme's foreground so it remains visible on both light and dark backgrounds.
+
+Borders, cards, buttons, hover states, labels, and status messages use the same native theme tokens as the rest of herdr-app. Checked visually with Graphite, Paper, and Atom One Dark, including the existing panel's 280px minimum width.
 
 ## Requirements
 
