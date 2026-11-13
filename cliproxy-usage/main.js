@@ -1,0 +1,524 @@
+// CLIProxyAPI usage panel: one mod, two copies.
+//
+// The docked copy (no props) shows the hub's pooled quota, refreshed every 15 minutes and on the
+// Refresh button. The settings dialog is the same mod opened with props().settings === true, so
+// the fields, the file and the error wording all live in this one file.
+//
+// All hub reading is ./hub.js's job; this file only turns its result into elements and writes
+// config.json. The management key is masked in the form, written only to config.json, and never
+// logged or put in an error string: a fixed phrase carries every failure instead.
+import { View, div } from "gpui-kit";
+import { h_flex, v_flex, Input, InputState } from "gpui-base";
+import { appHome, closeOverlay, nextCommand, openOverlay, props, readTextFile, run, theme, writeTextFile } from "herdr";
+import { consumeResetCredit, fetchAccounts, paceState, poolByProvider } from "./hub.js";
+
+const MOD = "cliproxy-usage";
+const CONFIG_FILE = "config.json";
+// 15 minutes (plan A2) is the whole cadence: reset countdowns are read at paint time, so nothing
+// here needs a repainting clock.
+const REFRESH_MS = 900000;
+const TIMEOUT_MS = 15000;
+
+// Fixed sentences for the four answers a consume can give; a hub body never becomes UI text.
+const OUTCOME_TEXT = {
+  reset: "Reset applied.",
+  alreadyRedeemed: "That credit was already redeemed.",
+  nothingToReset: "Nothing to reset right now.",
+  noCredit: "No credit available on this account.",
+};
+
+// The mod's own folder, which the app makes and the person owns. `appHome()` is a host call, so
+// this stays a function rather than a module-level constant.
+function configPath() {
+  const home = appHome();
+  const separator = home.includes("\\") ? "\\" : "/";
+  return [home, "mods", MOD, CONFIG_FILE].join(separator);
+}
+
+// A missing config.json is a first run, not a failure, and the runtime may report one either way:
+// a null read or a rejected read. Both mean "no text yet", so neither can become a `problem`.
+async function readConfigText(path) {
+  try {
+    const text = await readTextFile(path);
+    return typeof text === "string" ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+// `problem` is set only when the file exists and cannot be used, so the panel can tell that apart
+// from a first run.
+async function readConfig() {
+  const text = await readConfigText(configPath());
+  if (text === null) return { config: null, problem: null };
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = null;
+  }
+  const url = typeof data?.url === "string" ? data.url.trim() : "";
+  const managementKey = typeof data?.managementKey === "string" ? data.managementKey.trim() : "";
+  if (!url || !managementKey) {
+    return { config: null, problem: "The config file has no hub URL or management key." };
+  }
+  const label = typeof data.label === "string" && data.label.trim() ? data.label.trim() : null;
+  return { config: { url, managementKey, label }, problem: null };
+}
+
+function closeSelf() {
+  const overlay = props()?.overlay;
+  if (overlay) closeOverlay(overlay);
+}
+
+function openSettings() {
+  openOverlay({ mod: MOD, props: { settings: true }, kind: "dialog", width: 460, height: 320 });
+}
+
+const pad = (value) => String(value).padStart(2, "0");
+
+function hostOf(url) {
+  try {
+    return new URL(String(url)).host || null;
+  } catch {
+    return null;
+  }
+}
+
+function clockOf(iso) {
+  const when = new Date(iso ?? NaN);
+  return Number.isNaN(when.getTime()) ? null : `${pad(when.getHours())}:${pad(when.getMinutes())}`;
+}
+
+// `resetsAt` is epoch milliseconds (hub.js normalises both providers), so this is a plain
+// subtraction against the paint's own clock.
+function countdown(resetsAt) {
+  if (typeof resetsAt !== "number") return null;
+  const left = resetsAt - Date.now();
+  if (left <= 0) return "resetting";
+  const minutes = Math.round(left / 60000);
+  if (minutes < 60) return `in ${Math.max(1, minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `in ${hours}h ${minutes % 60}m`;
+  return `in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+const leftPercentOf = (usedPercent) =>
+  typeof usedPercent === "number" ? Math.max(0, Math.min(100, 100 - usedPercent)) : null;
+
+// An account's number is its tightest window: the one that runs out first is the one that stops work.
+function accountLeft(account) {
+  const lefts = (account.windows ?? [])
+    .map((window) => leftPercentOf(window.usedPercent))
+    .filter((left) => left !== null);
+  return lefts.length ? Math.min(...lefts) : null;
+}
+
+function barColor(t, leftPercent) {
+  if (leftPercent === null) return t.dim;
+  if (leftPercent <= 15) return t.blocked;
+  if (leftPercent <= 40) return t.working;
+  return t.done;
+}
+
+export default class CliproxyUsage extends View {
+  init(_props, cx) {
+    this.config = null;
+    this.problem = null;
+    this.error = null;
+    this.checkedAt = null;
+    this.groups = [];
+    this.busy = false;
+    // The last reset outcome, and the account/credit a confirmation is armed for. Nothing is spent
+    // until a "reset" command arrives, which only the confirm dialog sends.
+    this.notice = null;
+    this.pendingReset = null;
+    // Until config.json has been read once, "no hub yet" would be a guess, so the panel says it is
+    // still reading instead.
+    this.ready = false;
+    if (props()?.settings === true) {
+      this.settingsInit(cx);
+      return;
+    }
+    this.refreshNow(cx);
+    cx.timer.every(REFRESH_MS, (cx) => this.refreshNow(cx));
+    // The dialog is another copy. Saving it sends "refresh" here, so the panel shows the new hub
+    // without waiting for the next tick; the tick would pick the file up anyway.
+    cx.spawn(async (cx) => {
+      try {
+        for (;;) {
+          const command = await nextCommand();
+          if (command === "reset") this.spendReset(cx);
+          else this.refreshNow(cx);
+        }
+      } catch {
+        // This copy closed, or its build was replaced: the loop is over.
+      }
+    });
+  }
+
+  settingsInit(cx) {
+    this.formError = null;
+    this.saving = false;
+    this.focused = "";
+    this.handle = cx.focus_handle();
+    this.urlInput = InputState.new({ placeholder: "https://hub.example.com/" });
+    this.keyInput = InputState.new({ placeholder: "management key" });
+    // The key is only ever on screen as dots.
+    this.keyInput.set_masked(true);
+    this.labelInput = InputState.new({ placeholder: "defaults to the hub's host" });
+    const inputs = [["url", this.urlInput], ["key", this.keyInput], ["label", this.labelInput]];
+    for (const [name, input] of inputs) {
+      input.on("focus", (_event, cx) => {
+        this.focused = name;
+        cx.notify();
+      });
+      input.on("blur", (_event, cx) => {
+        if (this.focused !== name) return;
+        this.focused = "";
+        cx.notify();
+      });
+      input.on("submit", (_event, cx) => this.save(cx));
+    }
+    this.urlInput.focus();
+    this.fillForm(cx);
+  }
+
+  // Opening Settings again starts from the saved hub, so a typo is a fix, not a retype.
+  fillForm(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const { config } = await readConfig();
+        if (config) {
+          this.urlInput.set_value(config.url);
+          this.keyInput.set_value(config.managementKey);
+          this.labelInput.set_value(config.label ?? "");
+        }
+        cx.notify();
+      } catch {
+        // The copy closed while the file was read: nothing left to fill in.
+      }
+    });
+  }
+
+  // Manual and timed refreshes share one in-flight guard: a click during a poll adds nothing.
+  refreshNow(cx) {
+    if (this.busy) return;
+    this.busy = true;
+    cx.spawn(async (cx) => this.runRefresh(cx));
+  }
+
+  async runRefresh(cx) {
+    try {
+      const { config, problem } = await readConfig();
+      this.problem = problem;
+      this.ready = true;
+      if (!config) {
+        this.config = null;
+        this.groups = [];
+        this.error = null;
+        return;
+      }
+      this.config = config;
+      // The deadline is the mod's own timer, because the runtime's fetch has none.
+      const result = await fetchAccounts({
+        url: config.url,
+        managementKey: config.managementKey,
+        timeoutMs: TIMEOUT_MS,
+        onTimeout: (callback, ms) => cx.timer.after(ms, callback),
+      });
+      this.groups = poolByProvider(result.accounts);
+      this.error = result.error ?? null;
+      this.checkedAt = result.checkedAt ?? null;
+    } catch {
+      this.error = "The usage panel could not read the hub.";
+    } finally {
+      this.busy = false;
+      cx.notify();
+    }
+  }
+
+  save(cx) {
+    if (this.saving) return;
+    const url = this.urlInput.value().trim();
+    const managementKey = this.keyInput.value().trim();
+    const label = this.labelInput.value().trim();
+    if (!url || !managementKey) {
+      this.formError = "A hub URL and a management key are both needed.";
+      cx.notify();
+      return;
+    }
+    this.formError = null;
+    this.saving = true;
+    cx.spawn(async (cx) => {
+      try {
+        const text = `${JSON.stringify({ url, managementKey, ...(label ? { label } : {}) }, null, 2)}\n`;
+        const path = configPath();
+        // `expected` is the exact text the file must still hold, and null means "create it": a first
+        // save, or a read that failed, passes null instead of aborting the save.
+        await writeTextFile(path, text, await readConfigText(path));
+      } catch {
+        this.formError = "The config file could not be saved.";
+        this.saving = false;
+        cx.notify();
+        return;
+      }
+      this.saving = false;
+      // Ask the panel copy to refresh now; without it the next 15-minute tick reads the file anyway.
+      try {
+        run(`${MOD}.refresh`);
+      } catch {
+        // No panel copy listening: the tick covers it.
+      }
+      closeSelf();
+    });
+  }
+
+  // A click only arms the choice and asks; the confirm dialog's command is what spends.
+  useReset(account) {
+    const credits = account.resetCredits;
+    if (!credits || !credits.nextCreditId) return;
+    const email = account.email ?? account.id ?? "this account";
+    this.pendingReset = { accountId: account.id, creditId: credits.nextCreditId, email };
+    const count = `${credits.availableCount} banked Codex reset credit${credits.availableCount === 1 ? "" : "s"}`;
+    openOverlay({
+      mod: "confirm",
+      props: {
+        title: "Spend a reset credit?",
+        detail: `This spends one of the ${count} on ${email}. It resets that account's current window at the provider and cannot be undone.`,
+        command: { name: `${MOD}.reset` },
+      },
+      kind: "dialog",
+      width: 460,
+      height: 220,
+    });
+  }
+
+  spendReset(cx) {
+    const pending = this.pendingReset;
+    // Cleared first: a failure or a double command can never spend twice.
+    this.pendingReset = null;
+    if (!pending || !this.config) return;
+    cx.spawn(async (cx) => {
+      this.notice = { text: "Spending a reset credit…", tone: "muted" };
+      cx.notify();
+      let text;
+      let tone = "done";
+      try {
+        const result = await consumeResetCredit({
+          url: this.config.url,
+          managementKey: this.config.managementKey,
+          accountId: pending.accountId,
+          creditId: pending.creditId,
+          timeoutMs: TIMEOUT_MS,
+          onTimeout: (callback, ms) => cx.timer.after(ms, callback),
+        });
+        text = OUTCOME_TEXT[result?.outcome] ?? "The reset did not go through.";
+        if (result?.warning) text = `${text} ${result.warning}`;
+        if (result?.outcome !== "reset") tone = "blocked";
+      } catch (error) {
+        text = typeof error?.message === "string" && error.message ? error.message : "The reset did not go through.";
+        tone = "blocked";
+      }
+      this.notice = { text, tone };
+      this.refreshNow(cx);
+      cx.notify();
+    });
+  }
+
+  render() {
+    const t = theme();
+    return props()?.settings === true ? this.settingsRender(t) : this.panel(t);
+  }
+
+  hubLabel() {
+    if (!this.config) return "Usage";
+    return this.config.label ?? hostOf(this.config.url) ?? "CLIProxyAPI hub";
+  }
+
+  button(t, id, text, primary, action) {
+    return h_flex().id(id).h(24).px(8).flex_none().rounded(6).border_1()
+      .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+      .text_color(primary ? t.solid_foreground : t.muted).text_size(11).font_medium()
+      .cursor_pointer().hover((style) => style.opacity(0.85)).on_click(action).child(text);
+  }
+
+  panel(t) {
+    const checked = this.busy
+      ? "checking…"
+      : this.checkedAt
+        ? `checked ${clockOf(this.checkedAt) ?? "—"}`
+        : "not checked yet";
+    let body = v_flex().flex_1().min_h(0).gap(8).px(12).pb(12).overflow_y_scrollbar();
+    if (!this.config) {
+      if (!this.ready) {
+        body = body.child(div().text_size(11.5).text_color(t.dim).child("Reading the hub settings…"));
+      } else {
+        body = body
+          .child(
+            div().text_size(11.5).text_color(this.problem ? t.blocked : t.muted).child(
+              this.problem ?? "No hub yet. Add your CLIProxyAPI hub URL and management key to see pooled quota.",
+            ),
+          )
+          .child(this.button(t, "cpu-setup", "Set up", true, () => openSettings()));
+      }
+    } else {
+      if (this.error) body = body.child(div().text_size(11.5).text_color(t.blocked).child(this.error));
+      if (!this.groups.length && !this.error && !this.busy) {
+        body = body.child(div().text_size(11.5).text_color(t.dim).child("No Codex or Claude accounts on this hub yet."));
+      }
+      for (const group of this.groups) body = body.child(this.card(t, group));
+    }
+    return v_flex().size_full().min_h(0).bg(t.background).text_color(t.foreground)
+      .child(
+        h_flex().flex_none().gap(6).px(12).pt(10).pb(4)
+          .child(div().flex_1().min_w(0).truncate().text_size(12.5).font_semibold().text_color(t.foreground).child(this.hubLabel()))
+          .child(this.button(t, "cpu-refresh", "Refresh", false, (_event, cx) => this.refreshNow(cx)))
+          .child(this.button(t, "cpu-settings", "Settings", false, () => openSettings())),
+      )
+      .child(h_flex().flex_none().px(12).pb(8).child(div().text_size(10.5).text_color(t.dim).child(checked)))
+      .when(Boolean(this.notice), (el) =>
+        el.child(
+          h_flex().flex_none().px(12).pb(8).child(
+            div().text_size(10.5)
+              .text_color(this.notice?.tone === "blocked" ? t.blocked : this.notice?.tone === "done" ? t.done : t.muted)
+              .child(this.notice?.text ?? ""),
+          ),
+        ),
+      )
+      .child(body);
+  }
+
+  card(t, group) {
+    const many = group.accounts.length > 1;
+    let card = v_flex().gap(6)
+      .child(
+        h_flex().gap(6).px(2).pt(4)
+          .child(div().flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(t.foreground).child(group.label))
+          .child(div().flex_none().text_size(10.5).text_color(t.dim).child(`${group.accounts.length} account${many ? "s" : ""}`)),
+      );
+    for (const pooled of group.pool) card = card.child(this.pool(t, group, pooled));
+    for (const account of group.accounts) card = card.child(this.account(t, account, many));
+    return card;
+  }
+
+  // One row per pooled window, like t3code's Limits: the big number, a bar whose fill is what is
+  // left, a white tick where an even burn rate would be by now, and a chip with the reset
+  // countdown and the banked reset credits.
+  pool(t, group, pooled) {
+    const left = Math.max(0, Math.min(100, Math.round(pooled.leftPercent)));
+    const fill = left <= 15 ? t.blocked : group.provider === "claude" ? "#8a4b2f" : "#7a7a7a";
+    const windows = group.accounts.flatMap((a) => a.windows ?? []).filter((w) => w.key === pooled.key);
+    const resetsAt = Math.min(...windows.map((w) => w.resetsAt).filter((v) => typeof v === "number"));
+    const span = pooled.key === "session" ? 5 * 3600000 : 7 * 86400000;
+    // ponytail: window length by key (5 h / 7 d); read it from the hub if a plan ever differs.
+    const pace = Number.isFinite(resetsAt) ? Math.max(0, Math.min(100, ((resetsAt - Date.now()) / span) * 100)) : null;
+    const banked = group.accounts.reduce((n, a) => n + (a.resetCredits?.availableCount ?? 0), 0);
+    const chipText = [
+      Number.isFinite(resetsAt) ? `↻ ${(countdown(resetsAt) ?? "").replace(/^in /, "")}` : null,
+      banked > 0 ? `${banked} banked` : null,
+    ].filter(Boolean).join(" · ");
+    const label = pooled.key === "session" ? "Session" : pooled.label;
+    const trend = {
+      on: { glyph: "→", color: t.dim, tip: "On pace: spending about as fast as the window elapses" },
+      ahead: { glyph: "↗", color: t.working, tip: "Ahead of pace: spending faster than the window elapses" },
+      behind: { glyph: "↘", color: t.done, tip: "Behind pace: spending slower than the window elapses" },
+      unknown: { glyph: "—", color: t.dim, tip: "Pace unavailable: no reset time reported" },
+    }[paceState(left, pace)];
+    let bar = div().relative().flex_1().min_w(0).h(30).rounded(5).bg(t.surface).overflow_hidden()
+      .child(div().absolute().left(0).top(0).h(30).w(`${left}%`).bg(fill));
+    if (pace !== null) bar = bar.child(div().absolute().top(0).left(`${pace}%`).w(2).h(30).bg("#ffffff"));
+    if (chipText) {
+      bar = bar.child(
+        h_flex().absolute().right(4).top(6).h(18).px(5).items_center().rounded(4).bg(t.background)
+          .text_size(10).text_color(t.foreground).child(chipText),
+      );
+    }
+    return h_flex().gap(10).items_center().p(8).rounded(8).border_1().border_color(t.border).bg(t.raised)
+      .child(
+        v_flex().w(92).flex_none().min_w(0)
+          .child(div().truncate().text_size(10.5).font_medium().text_color(t.foreground).child(label))
+          .child(
+            h_flex().gap(4).items_end()
+              .child(div().text_size(22).font_semibold().text_color(t.foreground).child(`${left}%`))
+              .child(div().pb(3).text_size(10).text_color(t.dim).child("left"))
+              .child(div().pb(2).text_size(12).text_color(trend.color).tooltip(trend.tip).child(trend.glyph)),
+          ),
+      )
+      .child(bar);
+  }
+
+  account(t, account, showChips) {
+    const left = accountLeft(account);
+    let row = v_flex().gap(3).px(2)
+      .child(
+        h_flex().gap(6)
+          .child(
+            div().flex_1().min_w(0).truncate().text_size(11).text_color(account.error ? t.muted : t.foreground)
+              .child(account.email ?? account.id ?? account.provider),
+          )
+          .when(Boolean(account.plan), (el) => el.child(div().flex_none().text_size(10).text_color(t.dim).child(String(account.plan))))
+          .child(div().flex_none().text_size(11).text_color(barColor(t, left)).child(left === null ? "—" : `${Math.round(left)}%`)),
+      );
+    if (account.error) {
+      return row.child(div().text_size(10.5).text_color(t.blocked).child(account.error));
+    }
+    if (showChips && account.windows.length) {
+      row = row.child(h_flex().gap(4).flex_wrap().children(account.windows.map((window) => this.chip(t, window))));
+    }
+    // Banked reset credits: how many, when the next one runs out, and the action that spends one.
+    const credits = account.resetCredits;
+    if (credits && credits.availableCount > 0 && credits.nextCreditId) {
+      const when = countdown(credits.nextExpiresAt);
+      row = row.child(
+        h_flex().gap(6).items_center()
+          .child(
+            div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.muted)
+              .child(`${credits.availableCount} banked${when ? ` · expires ${when}` : ""}`),
+          )
+          .child(this.button(t, `cpu-reset-${account.id}`, "Use reset", false, () => this.useReset(account))),
+      );
+    }
+    return row;
+  }
+
+  chip(t, window) {
+    const left = leftPercentOf(window.usedPercent);
+    const resets = countdown(window.resetsAt);
+    return h_flex().flex_none().gap(4).rounded(4).px(5).py(1).bg(t.surface)
+      .child(div().text_size(10).text_color(t.dim).child(window.label))
+      .child(div().text_size(10).text_color(barColor(t, left)).child(left === null ? "—" : `${Math.round(left)}%`))
+      .when(Boolean(resets), (el) => el.child(div().text_size(10).text_color(t.dim).child(`· ${resets}`)));
+  }
+
+  settingsRender(t) {
+    const label = (text) => div().pt(14).pb(6).flex_none().text_size(11.5).text_color(t.dim).child(text);
+    const field = (input, name) => Input.new(input).h(34).flex_none().px(10).rounded(9).border_1()
+      .border_color(this.focused === name ? t.accent : t.input).bg(t.background)
+      .text_size(12.5).text_color(t.foreground);
+    return v_flex().id("cpu-settings").w_full().min_h(0).p(18).bg(t.popover).text_color(t.foreground)
+      .track_focus(this.handle)
+      .on_key_down((event, cx) => {
+        if (event.key !== "escape") return;
+        closeSelf();
+        cx.stop_propagation();
+      })
+      .child(
+        h_flex().flex_none()
+          .child(div().flex_1().text_size(15).font_semibold().child("CLIProxyAPI hub"))
+          .child(div().text_size(11).text_color(t.dim).child("Esc")),
+      )
+      .child(label("Hub URL"))
+      .child(field(this.urlInput, "url"))
+      .child(label("Management key"))
+      .child(field(this.keyInput, "key"))
+      .child(label("Label (optional)"))
+      .child(field(this.labelInput, "label"))
+      .when(Boolean(this.formError), (el) => el.child(div().pt(10).flex_none().text_size(11.5).text_color(t.blocked).child(this.formError)))
+      .child(
+        h_flex().pt(18).flex_none().gap(8).justify_end()
+          .child(this.button(t, "cpu-cancel", "Cancel", false, () => closeSelf()))
+          .child(this.button(t, "cpu-save", this.saving ? "Saving…" : "Save", true, (_event, cx) => this.save(cx))),
+      );
+  }
+}

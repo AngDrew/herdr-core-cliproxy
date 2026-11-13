@@ -1,0 +1,28 @@
+{
+  "credits": [
+    {
+      "id": "credit-soon",
+      "status": "available",
+      "reset_type": "codex_rate_limits",
+      "expires_at": "2026-11-15T18:00:00Z"
+    },
+    {
+      "id": "credit-later",
+      "status": "available",
+      "reset_type": "codex_rate_limits",
+      "expires_at": "2026-11-20T09:30:00Z"
+    },
+    {
+      "id": "credit-wrong-type",
+      "status": "available",
+      "reset_type": "something_else",
+      "expires_at": "2026-11-20T09:30:00Z"
+    },
+    {
+      "id": "credit-expired",
+      "status": "available",
+      "reset_type": "codex_rate_limits",
+      "expires_at": "2026-11-01T00:00:00Z"
+    }
+  ]
+}

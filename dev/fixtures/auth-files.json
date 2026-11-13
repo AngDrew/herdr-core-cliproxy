@@ -1,0 +1,47 @@
+{
+  "files": [
+    {
+      "id": "claude-1",
+      "auth_index": "claude-1",
+      "provider": "claude",
+      "email": "a@example.com"
+    },
+    {
+      "id": "claude-2",
+      "auth_index": "claude-2",
+      "provider": "claude",
+      "email": "b@example.com"
+    },
+    {
+      "id": "codex-1",
+      "auth_index": "codex-1",
+      "provider": "codex",
+      "email": "c@example.com",
+      "id_token": {
+        "chatgpt_account_id": "acct-codex-1",
+        "plan_type": "plus"
+      }
+    },
+    {
+      "id": "codex-2",
+      "auth_index": "codex-2",
+      "provider": "codex",
+      "email": "d@example.com",
+      "id_token": {
+        "chatgpt_account_id": "acct-codex-2",
+        "plan_type": "pro"
+      }
+    },
+    {
+      "id": "claude-disabled",
+      "auth_index": "claude-disabled",
+      "provider": "claude",
+      "disabled": true
+    },
+    {
+      "id": "gemini-1",
+      "auth_index": "gemini-1",
+      "provider": "gemini"
+    }
+  ]
+}
