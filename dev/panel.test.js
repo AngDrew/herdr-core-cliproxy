@@ -85,7 +85,7 @@ for (const background of ["#151b18", "#fafafa"]) {
     const gauge = p.pool(t, { accounts: [{ windows: [{ key: "session", resetsAt: Date.now() + 3600000 }] }] }, { key: "session", leftPercent });
     const backgrounds = nodes(gauge).map((n) => n.styles.bg?.[0]);
     assert.ok(backgrounds.includes(color), "quota fill uses the theme's semantic color");
-    assert.ok(backgrounds.includes(t.foreground), "pace tick contrasts in dark and light themes");
+    assert.ok(backgrounds.includes(color === t.working ? t.foreground : t.working), "pace tick has its own color, distinct from the fill");
   }
 }
 assert.ok(!/#[0-9a-f]{3,8}\b/i.test(source), "no hard-coded color literals in the view");

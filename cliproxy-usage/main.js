@@ -470,27 +470,31 @@ export default class CliproxyUsage extends View {
       behind: { glyph: "↘", color: t.done, tip: "Behind pace: spending slower than the window elapses" },
       unknown: { glyph: "—", color: t.dim, tip: "Pace unavailable: no reset time or window duration reported" },
     }[paceState(left, pace)];
-    let bar = div().relative().flex_1().min_w(0).h(30).rounded(5).bg(t.surface).overflow_hidden()
-      .child(div().absolute().left(0).top(0).h(30).w(`${left}%`).bg(fill));
-    if (pace !== null) bar = bar.child(div().absolute().top(0).left(`${pace}%`).w(2).h(30).bg(t.foreground));
-    if (chipText) {
-      bar = bar.child(
-        h_flex().absolute().right(4).top(6).h(18).px(5).items_center().rounded(4).bg(t.background)
-          .text_size(10.5).text_color(t.foreground).child(chipText),
-      );
-    }
-    return h_flex().gap(10).items_center().p(8).rounded(8).border_1().border_color(t.border).bg(t.raised)
+    // Slim 8 px track; the pace tick is taller than the track and uses the warm "working" color
+    // (foreground when the fill itself is that color) so it never blends into the fill.
+    const tick = fill === t.working ? t.foreground : t.working;
+    let bar = div().relative().w_full().h(14)
       .child(
-        v_flex().w(92).flex_none().min_w(0)
-          .child(div().truncate().text_size(11).font_medium().text_color(t.foreground).child(label))
-          .child(
-            h_flex().gap(4).items_end()
-              .child(div().text_size(24).font_semibold().text_color(t.foreground).child(`${left}%`))
-              .child(div().pb(3).text_size(10).text_color(t.dim).child("left"))
-              .child(div().pb(2).text_size(12).text_color(trend.color).tooltip(trend.tip).child(trend.glyph)),
-          ),
+        div().absolute().left(0).top(3).w_full().h(8).rounded(4).bg(t.surface).overflow_hidden()
+          .child(div().absolute().left(0).top(0).h(8).w(`${left}%`).bg(fill)),
+      );
+    if (pace !== null) bar = bar.child(div().absolute().top(0).left(`${pace}%`).w(3).h(14).rounded(1).bg(tick));
+    return h_flex().gap(10).items_center().px(8).py(6).rounded(8).border_1().border_color(t.border).bg(t.raised)
+      .child(
+        h_flex().w(88).flex_none().gap(3).items_end()
+          .child(div().text_size(20).font_semibold().text_color(t.foreground).child(`${left}%`))
+          .child(div().pb(2).text_size(9.5).text_color(t.dim).child("left"))
+          .child(div().pb(1).text_size(11).text_color(trend.color).tooltip(trend.tip).child(trend.glyph)),
       )
-      .child(bar);
+      .child(
+        v_flex().flex_1().min_w(0).gap(1)
+          .child(bar)
+          .child(
+            h_flex().gap(6).items_center()
+              .child(div().flex_1().min_w(0).truncate().text_size(10.5).font_medium().text_color(t.foreground).child(label))
+              .child(div().flex_none().text_size(10).text_color(t.muted).child(chipText)),
+          ),
+      );
   }
 
   resets(t, account, many) {
