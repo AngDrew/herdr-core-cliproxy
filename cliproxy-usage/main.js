@@ -447,7 +447,7 @@ export default class CliproxyUsage extends View {
 
   // One row per pooled window, like t3code's Limits: the big number, a bar whose fill is what is
   // left, a contrasting tick where an even burn rate would be by now, and a chip with the reset
-  // countdown and the banked reset credits.
+  // countdown.
   pool(t, group, pooled) {
     const left = Math.max(0, Math.min(100, Math.round(pooled.leftPercent)));
     const fill = left <= 15 ? t.blocked : left <= 40 ? t.working : t.accent;
@@ -456,13 +456,7 @@ export default class CliproxyUsage extends View {
     const span = pooled.key === "session" ? 5 * 3600000 : pooled.key === "weekly" || pooled.key.startsWith("weekly_") ? 7 * 86400000 : null;
     // ponytail: fixed session/weekly spans; billing periods have no pace tick until their actual length is available.
     const pace = Number.isFinite(resetsAt) && span !== null ? Math.max(0, Math.min(100, ((resetsAt - Date.now()) / span) * 100)) : null;
-    const banked = group.accounts.reduce((n, a) => n + (a.resetCredits?.availableCount ?? 0) +
-      (a.resetGrants?.grants ?? []).filter((g) => g.expiresAt === null || g.expiresAt > Date.now())
-        .reduce((sum, g) => sum + g.resetsLeft, 0), 0);
-    const chipText = [
-      Number.isFinite(resetsAt) ? `↻ ${(countdown(resetsAt) ?? "").replace(/^in /, "")}` : null,
-      banked > 0 ? `${banked} banked` : null,
-    ].filter(Boolean).join(" · ");
+    const chipText = Number.isFinite(resetsAt) ? `↻ ${(countdown(resetsAt) ?? "").replace(/^in /, "")}` : "";
     const label = pooled.key === "session" ? "Session" : pooled.label;
     const trend = {
       on: { glyph: "→", color: t.dim, tip: "On pace: spending about as fast as the window elapses" },
