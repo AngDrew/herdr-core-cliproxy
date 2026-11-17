@@ -2,7 +2,7 @@
 
 A **herdr-app mod** for monitoring [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) subscription quota without leaving your workspace. Inspired by t3code's **Usage → Limits** view.
 
-Despite the repository name, this runs in **herdr-app**, not as a herdr-core plugin. Developed against herdr-app **0.1.15** and herdr-core **0.1.21**.
+Despite the repository name, this runs in **herdr-app**, not as a herdr-core plugin. Developed against herdr-app **0.1.16** and herdr-core **0.1.21**.
 
 | Dark (Graphite) | Light (Paper) |
 | --- | --- |
@@ -38,7 +38,7 @@ The target is the percentage of time remaining in the window. For example, halfw
 
 ## Appearance
 
-Usage automatically follows the theme selected in herdr-app; there is no separate mod theme to configure. Normal quota bars use the theme's **accent** color, low quota (16–40% left) uses **working**, and critical quota (15% or less) uses **blocked**. The pace marker uses the theme's foreground so it remains visible on both light and dark backgrounds.
+Usage automatically follows the theme selected in herdr-app; there is no separate mod theme to configure. Normal quota bars use the theme's **accent** color, low quota (16–40% left) uses **working**, and critical quota (15% or less) uses **blocked**. Quota rows are a slim 8px bar with the percentage, label and reset countdown beneath it; the pace marker straddles the bar in the theme's **working** color, switching to **foreground** when the fill is already at working level, so it never disappears into the bar.
 
 Borders, cards, buttons, hover states, labels, and status messages use the same native theme tokens as the rest of herdr-app. Checked visually with Graphite, Paper, and Atom One Dark, including the existing panel's 280px minimum width.
 
@@ -96,7 +96,7 @@ git -C $appHome apply --ignore-space-change $patch
 
 The patch adds **Usage** after **Changes**, using the same open/close and per-space panel state. It preserves your Files/Changes choices and only enables Usage when the layout contains the `usage` child. Its icon is included in the mod folder copied in step 1.
 
-This patch targets the bundled Tabs mod from herdr-app 0.1.15. If an app update replaces that mod, check whether the patch needs to be reapplied; do not overwrite newer Tabs code with an old copy.
+This patch targets the bundled Tabs mod from herdr-app 0.1.16. If an app update replaces that mod, check whether the patch needs to be reapplied; do not overwrite newer Tabs code with an old copy.
 
 ### 4. Connect your hub
 
