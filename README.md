@@ -15,7 +15,7 @@ Despite the repository name, this runs in **herdr-app**, not as a herdr-core plu
 - **Claude and Codex gauges:** Session, Weekly, and model-scoped Claude windows such as **Weekly · Fable**, when reported by the hub.
 - **Usage tab beside Files and Changes:** opens and closes the existing side panel, before the window controls—not a separate column beyond the close button. The panel choice is remembered per space.
 - **Ollama Cloud via plugin:** included/purchased credit balances, 24-hour spend and token counts, billing-period quota or legacy session/weekly gauges. Read-only; no Ollama key is stored in this mod.
-- **Alibaba Token Plan via plugin:** 5-hour, weekly and monthly credit-remaining gauges with reset countdowns, from the [Token Plan Usage plugin](https://github.com/AngDrew/cliproxyapi-tokenplan-usage) `tokenplan-usage` monitor (needs a console cookie on the hub). Read-only.
+- **Alibaba Token Plan via plugin:** 5-hour, weekly and monthly credit-remaining gauges with reset countdowns, from the `tokenplan-usage` CLIProxyAPI plugin monitor (needs a console cookie on the hub). Read-only.
 - **Clean subscription sections:** a divider separates Claude and Codex; no redundant email, plan, percentage, or miniature quota rows beneath the gauges.
 - **Native panel styling:** the same rounded border, clipped corners, 42px header, and header divider as Files/Changes.
 - **Theme-aware colors:** follows herdr-app's light, dark, and custom themes; no fixed provider colors or white-only markers.
