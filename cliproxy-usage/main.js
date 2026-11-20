@@ -381,7 +381,7 @@ export default class CliproxyUsage extends View {
     } else {
       if (this.error) body = body.child(div().text_size(11.5).text_color(t.blocked).child(this.error));
       if (!this.groups.length && !this.error && !this.busy) {
-        body = body.child(div().text_size(11.5).text_color(t.dim).child("No Codex, Claude or Ollama monitor accounts on this hub yet."));
+        body = body.child(div().text_size(11.5).text_color(t.dim).child("No Codex, Claude, Ollama or Token Plan monitor accounts on this hub yet."));
       }
       for (const [index, group] of this.groups.entries()) {
         if (index > 0) body = body.child(div().h(1).w_full().flex_none().my(6).bg(t.border));

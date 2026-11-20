@@ -16,3 +16,4 @@ jobs:
           node dev/panel.test.js
           node dev/tab-integration.test.js
           node dev/ollama.test.js
+          node dev/tokenplan.test.js

@@ -146,7 +146,7 @@ export async function fetchAccounts(input = {}) {
     url,
     managementKey,
     fetchImpl = defaultFetch,
-    providers = ["codex", "claude", "ollama-usage"],
+    providers = ["codex", "claude", "ollama-usage", "tokenplan-usage"],
     timeoutMs = DEFAULT_TIMEOUT_MS,
     onTimeout,
   } = input;
@@ -195,7 +195,7 @@ export function poolByProvider(accounts) {
     if (!groups.has(account.provider)) {
       groups.set(account.provider, {
         provider: account.provider,
-        label: account.provider === "ollama-usage" ? "Ollama" : PROVIDER_READERS[account.provider]?.label ?? account.provider,
+        label: PLUGIN_LABELS[account.provider] ?? PROVIDER_READERS[account.provider]?.label ?? account.provider,
         accounts: [],
         sums: new Map(),
       });
@@ -587,18 +587,19 @@ async function readAccount({ file, base, managementKey, fetchImpl, timeoutMs, on
   };
   const provider = PROVIDER_READERS[file.provider];
   const options = { base, managementKey, fetchImpl, timeoutMs, onTimeout };
-  if (file.provider === "ollama-usage") {
+  if (file.provider in PLUGIN_READERS) {
+    const { label: pluginName, read } = PLUGIN_READERS[file.provider];
     try {
       if (typeof file.auth_index !== "string" || !file.auth_index.trim()) {
-        throw phraseFailure("The Ollama monitor has no credential index.");
+        throw phraseFailure(`The ${pluginName} monitor has no credential index.`);
       }
       const payload = await managementRequest({
         ...options,
         timeoutMs: Math.max(timeoutMs, 25000),
         path: "quota/fetch",
-        body: { auth_index: file.auth_index, plugin_id: "ollama-usage" },
+        body: { auth_index: file.auth_index, plugin_id: file.provider },
       });
-      return { ...identity, label: file.label || file.name || file.id, ...readOllamaQuota(payload) };
+      return { ...identity, label: file.label || file.name || file.id, ...read(payload) };
     } catch (error) {
       return { ...identity, windows: [], error: failureText(error) };
     }
@@ -673,6 +674,37 @@ function readOllamaQuota(payload) {
   if (!windows.length && !summary.length) return fail();
   return { plan: "Ollama Cloud", windows, summary };
 }
+
+// Token Plan credit windows come from a console cookie on the hub. Same boundary as Ollama: only
+// known windows and a plan name matching a strict pattern leave the plugin response; the limits
+// summary is a ceiling, not consumption, so it is never rendered.
+function readTokenPlanQuota(payload) {
+  const fail = () => { throw phraseFailure("The Token Plan plugin returned an unreadable quota response."); };
+  if (!Array.isArray(payload?.groups)) return fail();
+  const names = { "5h": ["session", SESSION_LABEL], "7d": ["weekly", WEEKLY_LABEL], "1mo": ["monthly", "Monthly"] };
+  const windows = [];
+  for (const group of payload.groups) {
+    if (!Array.isArray(group?.buckets)) return fail();
+    for (const bucket of group.buckets) {
+      const name = names[bucket?.window];
+      if (!Array.isArray(name)) continue;
+      const fraction = bucket.remainingFraction;
+      const reset = bucket.resetTime == null || bucket.resetTime === "" ? null : Date.parse(bucket.resetTime);
+      if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1 ||
+          (reset !== null && !Number.isFinite(reset)) || windows.some((w) => w.key === name[0])) return fail();
+      windows.push({ key: name[0], label: name[1], usedPercent: (1 - fraction) * 100, resetsAt: reset });
+    }
+  }
+  if (!windows.length) return fail();
+  const plan = payload.subscription?.plan;
+  return { plan: typeof plan === "string" && /^Token Plan( · [A-Za-z0-9 _-]{1,24})?$/.test(plan) ? plan : "Token Plan", windows };
+}
+
+const PLUGIN_LABELS = { "ollama-usage": "Ollama", "tokenplan-usage": "Token Plan" };
+const PLUGIN_READERS = {
+  "ollama-usage": { label: "Ollama", read: readOllamaQuota },
+  "tokenplan-usage": { label: "Token Plan", read: readTokenPlanQuota },
+};
 
 // One provider call through the hub. `header` carries the literal "Bearer $TOKEN$" the hub
 // replaces with that account's token; `data` is the JSON *string* the real hub expects on a POST.
